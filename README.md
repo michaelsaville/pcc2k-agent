@@ -7,23 +7,51 @@ owned namespaces to OpsHub. Wire spec lives in
 [fleethub/docs/AGENT-PROTOCOL.md](../fleethub/docs/AGENT-PROTOCOL.md) —
 this repo is the reference implementation of the client side.
 
-**Status:** Phase 1 dev (2026-05-01). Linux-only. Ships
+**Status:** Phase 1 dev (2026-05-01). Linux + Windows. Ships
 `agent.hello` → `session.proof` → `session.accept` handshake,
-HMAC-signed `inventory.report` + `agent.heartbeat`. macOS, Windows,
-and the OpsHub namespaces (`ad.*`, `windows.services.*`) are deferred.
+HMAC-signed `inventory.report` + `agent.heartbeat`. macOS and the
+OpsHub namespaces (`ad.*`, `windows.services.*`) are deferred. The
+Windows build runs as a console app today; the SCM-service wrapper +
+DPAPI token storage + signed MSI land in Phase 1.5b.
 
 ## Build
 
-No system Go required — build via Docker:
+No system Go required — build via Docker.
+
+**Linux x86-64:**
 
 ```bash
-docker run --rm -v "$PWD:/src" -w /src golang:1.22-alpine \
-  sh -c "go mod tidy && CGO_ENABLED=0 go build -ldflags='-s -w' -o pcc2k-agent ./cmd/agent"
+docker run --rm -v "$PWD:/src" -w /src golang:1.22-alpine sh -c "
+  go mod tidy && \
+  CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o pcc2k-agent ./cmd/agent"
 ```
 
-Produces a static stripped Linux x86-64 binary (~5 MB).
+**Windows x86-64 (cross-compile from Linux/macOS):**
+
+```bash
+docker run --rm -v "$PWD:/src" -w /src \
+  -e GOOS=windows -e GOARCH=amd64 -e CGO_ENABLED=0 \
+  golang:1.22-alpine sh -c "
+  go build -trimpath -buildvcs=false -ldflags='-s -w' -o pcc2k-agent.exe ./cmd/agent"
+```
+
+Both produce static stripped binaries (~5 MB). `-trimpath` and
+`-buildvcs=false` make the build reproducible — running the same
+command twice on the same source produces byte-identical output. Per
+`fleethub/docs/HIPAA-READY.md` §4 this is mandatory; auditors can
+verify the signed binary matches published source.
+
+Or use the bundled helper:
+
+```bash
+./scripts/build.sh         # both targets
+./scripts/build.sh linux   # just Linux
+./scripts/build.sh windows # just Windows
+```
 
 ## Run
+
+**Linux:**
 
 ```bash
 ./pcc2k-agent \
@@ -36,10 +64,35 @@ Produces a static stripped Linux x86-64 binary (~5 MB).
   --insecure                      # required while gateway speaks plain ws
 ```
 
+**Windows (test box, no service wrapper yet):**
+
+Copy `pcc2k-agent.exe` to the target host and run from an Administrator
+PowerShell (registry reads for installed software need elevated
+context to enumerate everything; non-admin works but misses HKLM
+entries).
+
+```powershell
+.\pcc2k-agent.exe `
+  --gateway "ws://gateway-host:3012/agent/v1" `
+  --token   "<enrollment-token>" `
+  --agent-id  "<op_agent-id>" `
+  --client    "Test Tenant" `
+  --hostname  "$env:COMPUTERNAME" `
+  --role      workstation `
+  --insecure
+```
+
+The Windows build collects inventory via PowerShell `Get-CimInstance`
+(works back to PowerShell 5.1, the Win 10/11 baseline) plus direct
+registry reads for installed-app enumeration. PS 7-only flags like
+`ConvertTo-Json -AsArray` are deliberately avoided per the
+`feedback_powershell_version_compat.md` rule.
+
 Once mode (smoke test, single inventory.report then exit):
 
 ```bash
-./pcc2k-agent --once ...
+./pcc2k-agent --once ...           # same flags as above
+.\pcc2k-agent.exe --once ...       # Windows
 ```
 
 ## Phase 1 dev shortcuts
@@ -51,8 +104,11 @@ Once mode (smoke test, single inventory.report then exit):
   local cache (HIPAA-READY §1) and the OpsHub side uses
   `Op_Agent.proofKeyEnc` (column add tracked separately). Tonight every
   host sharing `GATEWAY_DEV_TOKEN` can connect.
-- **Linux only.** macOS and Windows collectors are placeholders. Targets
-  for Phase 1.5.
+- **Linux + Windows console mode.** macOS collectors deferred. Windows
+  Service wrapper (golang.org/x/sys/windows/svc), DPAPI token storage,
+  and signed MSI installer are tracked as Phase 1.5b — for testing
+  outside clinical networks the unsigned exe runs fine; clinical
+  deployment needs the Authenticode EV signature first per HIPAA spec.
 - **No script execution.** Phase 2 adds `scripts.*` namespace + signed-
   script enforcement (HIPAA tenants).
 

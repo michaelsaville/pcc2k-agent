@@ -383,20 +383,7 @@ func (s *session) sendAuthed(method string, params interface{}) (string, error) 
 	return "", nil
 }
 
-func runtimeOSVersion() string {
-	if v := tryRead("/etc/os-release", ""); v != "" {
-		// e.g. PRETTY_NAME="Ubuntu 24.04.1 LTS"
-		osRel := readOsRelease()
-		if pn := osRel["PRETTY_NAME"]; pn != "" {
-			return pn
-		}
-	}
-	return runtimeFamily()
-}
-
-func runtimeFamily() string {
-	return detectFamily()
-}
+// runtimeOSVersion is per-OS (inventory_linux.go / inventory_windows.go).
 
 func hmacSha256(key, data []byte) []byte {
 	m := hmac.New(sha256.New, key)
