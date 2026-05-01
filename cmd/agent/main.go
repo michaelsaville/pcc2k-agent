@@ -42,6 +42,44 @@ import (
 const protocolVersion = "1.0"
 
 func main() {
+	// Windows: when SCM started us, hand off to the service handler
+	// before any flag parsing. The flags-pulled-from-config-file path
+	// runs inside runAsService().
+	if isWindowsService() {
+		runAsService()
+		return
+	}
+
+	// Subcommands (Windows-only effects, but the dispatch is shared).
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install":
+			if err := installService(os.Args[2:]); err != nil {
+				fatal("install: %v", err)
+			}
+			return
+		case "uninstall":
+			if err := uninstallService(); err != nil {
+				fatal("uninstall: %v", err)
+			}
+			return
+		case "start":
+			if err := startServiceCmd(); err != nil {
+				fatal("start: %v", err)
+			}
+			return
+		case "stop":
+			if err := stopServiceCmd(); err != nil {
+				fatal("stop: %v", err)
+			}
+			return
+		}
+	}
+
+	runConsole()
+}
+
+func runConsole() {
 	var (
 		gatewayURL = flag.String("gateway", envDefault("PCC2K_GATEWAY_URL", "ws://127.0.0.1:3012/agent/v1"), "WSS gateway URL")
 		token      = flag.String("token", os.Getenv("PCC2K_AGENT_TOKEN"), "enrollment token (or PCC2K_AGENT_TOKEN env)")
@@ -91,12 +129,26 @@ func main() {
 		return
 	}
 
+	runReconnectLoop(context.Background(), cfg)
+}
+
+// runReconnectLoop is the same supervisor loop runConsole() uses, but
+// also called by the SCM service handler. Returns when ctx is
+// cancelled — the service handler signals shutdown by cancelling.
+func runReconnectLoop(ctx context.Context, cfg agentConfig) {
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		err := runSession(cfg)
 		if err != nil {
 			log.Printf("session ended: %v — reconnecting in 5s", err)
 		}
-		time.Sleep(5 * time.Second)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
 	}
 }
 

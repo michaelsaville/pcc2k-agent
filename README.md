@@ -64,7 +64,7 @@ Or use the bundled helper:
   --insecure                      # required while gateway speaks plain ws
 ```
 
-**Windows (test box, no service wrapper yet):**
+**Windows — console mode (interactive testing):**
 
 Copy `pcc2k-agent.exe` to the target host and run from an Administrator
 PowerShell (registry reads for installed software need elevated
@@ -80,6 +80,36 @@ entries).
   --hostname  "$env:COMPUTERNAME" `
   --role      workstation `
   --insecure
+```
+
+**Windows — install as a service (recommended for soak testing):**
+
+```powershell
+# Run from an elevated PowerShell. Token + non-secret config are stored
+# under C:\ProgramData\PCC2K\ — the token lives in agent.dat, encrypted
+# with DPAPI scoped to the local machine so only LocalSystem (and local
+# admins) can decrypt.
+.\pcc2k-agent.exe install `
+  --gateway "ws://gateway-host:3012/agent/v1" `
+  --token   "<enrollment-token>" `
+  --agent-id  "<op_agent-id>" `
+  --client    "Test Tenant" `
+  --hostname  "$env:COMPUTERNAME" `
+  --role      workstation `
+  --insecure
+
+.\pcc2k-agent.exe start    # or: sc start pcc2k-agent
+.\pcc2k-agent.exe stop
+.\pcc2k-agent.exe uninstall  # leaves config files, drops service
+```
+
+The service runs as **LocalSystem** with auto-start + restart-on-failure
+(5s × 3 attempts, reset after 60s clean). Service status:
+
+```powershell
+Get-Service pcc2k-agent          # quick state
+sc qc pcc2k-agent                # config dump
+Get-Content C:\ProgramData\PCC2K\config.json
 ```
 
 The Windows build collects inventory via PowerShell `Get-CimInstance`
@@ -104,11 +134,11 @@ Once mode (smoke test, single inventory.report then exit):
   local cache (HIPAA-READY §1) and the OpsHub side uses
   `Op_Agent.proofKeyEnc` (column add tracked separately). Tonight every
   host sharing `GATEWAY_DEV_TOKEN` can connect.
-- **Linux + Windows console mode.** macOS collectors deferred. Windows
-  Service wrapper (golang.org/x/sys/windows/svc), DPAPI token storage,
-  and signed MSI installer are tracked as Phase 1.5b — for testing
-  outside clinical networks the unsigned exe runs fine; clinical
-  deployment needs the Authenticode EV signature first per HIPAA spec.
+- **Linux + Windows.** macOS collectors deferred. Windows ships
+  console-mode + SCM service wrapper + DPAPI token storage. Signed MSI
+  installer remains future work — for testing outside clinical
+  networks the unsigned exe runs fine; clinical deployment needs the
+  Authenticode EV signature first per HIPAA spec.
 - **No script execution.** Phase 2 adds `scripts.*` namespace + signed-
   script enforcement (HIPAA tenants).
 
