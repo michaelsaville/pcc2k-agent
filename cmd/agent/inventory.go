@@ -46,12 +46,49 @@ type Health struct {
 	DiskPct float64 `json:"diskPct"`
 }
 
+// NetworkInterface — one per physical/virtual NIC. Loopback is excluded.
+type NetworkInterface struct {
+	Name      string   `json:"name"`
+	MAC       string   `json:"mac,omitempty"`
+	IPv4      []string `json:"ipv4,omitempty"`
+	IPv6      []string `json:"ipv6,omitempty"`
+	Up        bool     `json:"up"`
+	SpeedMbps int      `json:"speedMbps,omitempty"`
+}
+
+// ListeningPort — TCP/UDP socket bound to LISTEN. Process name is
+// best-effort (Linux needs CAP_NET_ADMIN or root; Windows runs the
+// service as LocalSystem so it sees everything).
+type ListeningPort struct {
+	Protocol string `json:"protocol"` // "tcp" or "udp"
+	Address  string `json:"address"`  // "0.0.0.0:22", "[::]:80"
+	Process  string `json:"process,omitempty"`
+}
+
+// RecentConnection — established TCP connection. We cap the slice at
+// 50 entries to keep heartbeat payloads bounded; an MSP fleet of
+// 100 hosts × 50 conns = 5K rows per cycle which is fine. Loopback
+// and v6 link-local connections are filtered out.
+type RecentConnection struct {
+	Protocol string `json:"protocol"`
+	Local    string `json:"local"`
+	Remote   string `json:"remote"`
+	State    string `json:"state"`
+}
+
+type Network struct {
+	Interfaces        []NetworkInterface `json:"interfaces"`
+	ListeningPorts    []ListeningPort    `json:"listeningPorts"`
+	RecentConnections []RecentConnection `json:"recentConnections"`
+}
+
 type InventorySnapshot struct {
 	Hardware Hardware `json:"hardware"`
 	OS       OSFacts  `json:"os"`
 	Patches  Patches  `json:"patches"`
 	Software Software `json:"software"`
 	Health   Health   `json:"health"`
+	Network  Network  `json:"network"`
 }
 
 type DeviceFacts struct {
@@ -74,6 +111,7 @@ func collectInventory() InventorySnapshot {
 		Patches:  Patches{LastChecked: time.Now().UTC().Format(time.RFC3339), Pending: 0, Failed: 0},
 		Software: softwareFacts(),
 		Health:   healthFacts(),
+		Network:  networkFacts(),
 	}
 }
 

@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"runtime"
 	"strconv"
@@ -73,6 +74,146 @@ func healthFacts() Health {
 		RAMPct:  ramPct(),
 		DiskPct: rootDiskPct(),
 	}
+}
+
+// networkFacts uses pure-Go net.Interfaces() for the NIC inventory and
+// shells out to `ss` (iproute2) for socket enumeration. `ss -tlnH` and
+// `ss -tnH state established` are the canonical sources; both are
+// available on every modern Linux distro we'd manage.
+func networkFacts() Network {
+	return Network{
+		Interfaces:        linuxInterfaces(),
+		ListeningPorts:    linuxListeningPorts(),
+		RecentConnections: linuxRecentConnections(),
+	}
+}
+
+func linuxInterfaces() []NetworkInterface {
+	out := []NetworkInterface{}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, iface := range ifs {
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		ni := NetworkInterface{
+			Name: iface.Name,
+			MAC:  iface.HardwareAddr.String(),
+			Up:   iface.Flags&net.FlagUp != 0,
+		}
+		// Read /sys/class/net/<name>/speed; -1 or absent means unknown
+		// (down interface, virtual, etc.).
+		if v := tryRead("/sys/class/net/"+iface.Name+"/speed", ""); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				ni.SpeedMbps = n
+			}
+		}
+		addrs, _ := iface.Addrs()
+		for _, a := range addrs {
+			ip, _, err := net.ParseCIDR(a.String())
+			if err != nil {
+				continue
+			}
+			if ip.IsLinkLocalUnicast() {
+				continue
+			}
+			if ip.To4() != nil {
+				ni.IPv4 = append(ni.IPv4, ip.String())
+			} else {
+				ni.IPv6 = append(ni.IPv6, ip.String())
+			}
+		}
+		out = append(out, ni)
+	}
+	return out
+}
+
+func linuxListeningPorts() []ListeningPort {
+	out := []ListeningPort{}
+	out = append(out, parseSSListening("ss", "-tlnHp")...)
+	out = append(out, parseSSListening("ss", "-ulnHp")...)
+	if len(out) > 200 {
+		out = out[:200]
+	}
+	return out
+}
+
+// parseSSListening parses `ss -[t|u]lnHp` output. -H drops the header,
+// -p shows the owning process if we have permission. Lines look like:
+//   LISTEN  0  128  0.0.0.0:22       0.0.0.0:*  users:(("sshd",pid=...))
+// Process column is best-effort.
+func parseSSListening(name string, args ...string) []ListeningPort {
+	out := []ListeningPort{}
+	raw := runShell(name, args...)
+	if raw == "" {
+		return out
+	}
+	proto := "tcp"
+	if len(args) > 0 && strings.Contains(args[0], "u") {
+		proto = "udp"
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		// State (LISTEN/UNCONN), Recv-Q, Send-Q, LocalAddress:Port, Peer:*, [users:...]
+		addr := fields[3]
+		process := ""
+		for _, f := range fields[5:] {
+			if strings.HasPrefix(f, "users:") {
+				// users:(("sshd",pid=12,fd=3)) → "sshd"
+				if idx := strings.Index(f, "((\""); idx >= 0 {
+					rest := f[idx+3:]
+					if end := strings.Index(rest, "\""); end > 0 {
+						process = rest[:end]
+					}
+				}
+			}
+		}
+		out = append(out, ListeningPort{
+			Protocol: proto,
+			Address:  addr,
+			Process:  process,
+		})
+	}
+	return out
+}
+
+func linuxRecentConnections() []RecentConnection {
+	out := []RecentConnection{}
+	raw := runShell("ss", "-tnH", "state", "established")
+	if raw == "" {
+		return out
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		// Recv-Q, Send-Q, Local, Peer
+		local := fields[2]
+		remote := fields[3]
+		// Filter loopback + link-local v6 — local-only chatter, no fleet value.
+		if strings.HasPrefix(local, "127.") || strings.HasPrefix(local, "[::1]") {
+			continue
+		}
+		if strings.HasPrefix(remote, "127.") || strings.HasPrefix(remote, "[::1]") {
+			continue
+		}
+		out = append(out, RecentConnection{
+			Protocol: "tcp",
+			Local:    local,
+			Remote:   remote,
+			State:    "ESTABLISHED",
+		})
+		if len(out) >= 50 {
+			break
+		}
+	}
+	return out
 }
 
 func runtimeOSVersion() string {

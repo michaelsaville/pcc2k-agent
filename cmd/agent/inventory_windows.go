@@ -155,6 +155,199 @@ func softwareFacts() Software {
 	return Software{TotalInstalled: len(pkgs), Sample: sample}
 }
 
+// networkFacts uses pure-Go net.Interfaces() for the NIC inventory and
+// PowerShell `Get-NetTCPConnection` for sockets. Per-process owner
+// resolution requires the service to run as LocalSystem (which is how
+// the SCM service is installed); when running console-mode as a
+// non-admin user, the OwningProcess column is still populated but
+// process-name lookup may fail. We tolerate empty Process strings.
+func networkFacts() Network {
+	return Network{
+		Interfaces:        windowsInterfaces(),
+		ListeningPorts:    windowsListeningPorts(),
+		RecentConnections: windowsRecentConnections(),
+	}
+}
+
+type psNetTCPRow struct {
+	LocalAddress   string `json:"LocalAddress"`
+	LocalPort      int    `json:"LocalPort"`
+	RemoteAddress  string `json:"RemoteAddress"`
+	RemotePort     int    `json:"RemotePort"`
+	State          string `json:"State"`
+	OwningProcess  int    `json:"OwningProcess"`
+	ProcessName    string `json:"ProcessName"`
+}
+
+func psJSONArray(script string) []map[string]interface{} {
+	out := runShell("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	if out == "" {
+		return nil
+	}
+	var arr []map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &arr); err == nil {
+		return arr
+	}
+	// Single-row result comes back as an object — wrap in array.
+	var single map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &single); err == nil {
+		return []map[string]interface{}{single}
+	}
+	return nil
+}
+
+func windowsInterfaces() []NetworkInterface {
+	out := []NetworkInterface{}
+	ifs, err := netInterfaces()
+	if err != nil {
+		return out
+	}
+	for _, iface := range ifs {
+		if iface.IsLoopback {
+			continue
+		}
+		ni := NetworkInterface{
+			Name:      iface.Name,
+			MAC:       iface.MAC,
+			IPv4:      iface.IPv4,
+			IPv6:      iface.IPv6,
+			Up:        iface.Up,
+			SpeedMbps: iface.SpeedMbps,
+		}
+		out = append(out, ni)
+	}
+	return out
+}
+
+type winInterface struct {
+	Name       string
+	MAC        string
+	IPv4       []string
+	IPv6       []string
+	Up         bool
+	SpeedMbps  int
+	IsLoopback bool
+}
+
+// netInterfaces shells out to PowerShell because Get-NetAdapter +
+// Get-NetIPAddress yield the rich shape with link speed and the
+// human-readable adapter name. net.Interfaces() returns OS-cryptic
+// names like "Local Area Connection* 14" which confuse end users.
+func netInterfaces() ([]winInterface, error) {
+	script := `
+$adapters = Get-NetAdapter | Where-Object { $_.Status -ne 'Disabled' }
+$addrs    = Get-NetIPAddress -ErrorAction SilentlyContinue
+$result = foreach ($a in $adapters) {
+  $ipv4 = @($addrs | Where-Object { $_.InterfaceIndex -eq $a.InterfaceIndex -and $_.AddressFamily -eq 'IPv4' } | Select-Object -ExpandProperty IPAddress)
+  $ipv6 = @($addrs | Where-Object { $_.InterfaceIndex -eq $a.InterfaceIndex -and $_.AddressFamily -eq 'IPv6' -and $_.IPAddress -notmatch '^fe80' } | Select-Object -ExpandProperty IPAddress)
+  [pscustomobject]@{
+    Name      = $a.Name
+    MAC       = $a.MacAddress
+    IPv4      = $ipv4
+    IPv6      = $ipv6
+    Up        = ($a.Status -eq 'Up')
+    SpeedMbps = [int]($a.LinkSpeed -replace '[^0-9]','')
+    IsLoopback = ($a.InterfaceDescription -match 'Loopback')
+  }
+}
+$result | ConvertTo-Json -Compress
+`
+	rows := psJSONArray(script)
+	out := make([]winInterface, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, winInterface{
+			Name:       str(r["Name"]),
+			MAC:        str(r["MAC"]),
+			IPv4:       toStringSlice(r["IPv4"]),
+			IPv6:       toStringSlice(r["IPv6"]),
+			Up:         numFloat(r["Up"]) != 0 || str(r["Up"]) == "True" || str(r["Up"]) == "true",
+			SpeedMbps:  numInt(r["SpeedMbps"]),
+			IsLoopback: numFloat(r["IsLoopback"]) != 0 || str(r["IsLoopback"]) == "True",
+		})
+	}
+	return out, nil
+}
+
+func toStringSlice(v interface{}) []string {
+	if v == nil {
+		return nil
+	}
+	if s, ok := v.([]interface{}); ok {
+		out := make([]string, 0, len(s))
+		for _, x := range s {
+			out = append(out, str(x))
+		}
+		return out
+	}
+	if s, ok := v.(string); ok && s != "" {
+		return []string{s}
+	}
+	return nil
+}
+
+func windowsListeningPorts() []ListeningPort {
+	script := `
+$conns = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue
+$result = foreach ($c in $conns) {
+  $proc = ''
+  try { $proc = (Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue).Name } catch {}
+  [pscustomobject]@{
+    Protocol = 'tcp'
+    Address  = if ($c.LocalAddress -match ':') { "[{0}]:{1}" -f $c.LocalAddress, $c.LocalPort } else { "{0}:{1}" -f $c.LocalAddress, $c.LocalPort }
+    Process  = $proc
+  }
+}
+$udp = Get-NetUDPEndpoint -ErrorAction SilentlyContinue
+$result += foreach ($u in $udp) {
+  $proc = ''
+  try { $proc = (Get-Process -Id $u.OwningProcess -ErrorAction SilentlyContinue).Name } catch {}
+  [pscustomobject]@{
+    Protocol = 'udp'
+    Address  = if ($u.LocalAddress -match ':') { "[{0}]:{1}" -f $u.LocalAddress, $u.LocalPort } else { "{0}:{1}" -f $u.LocalAddress, $u.LocalPort }
+    Process  = $proc
+  }
+}
+$result | Select-Object -First 200 | ConvertTo-Json -Compress
+`
+	rows := psJSONArray(script)
+	out := make([]ListeningPort, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ListeningPort{
+			Protocol: str(r["Protocol"]),
+			Address:  str(r["Address"]),
+			Process:  str(r["Process"]),
+		})
+	}
+	return out
+}
+
+func windowsRecentConnections() []RecentConnection {
+	script := `
+Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue |
+  Where-Object {
+    $_.LocalAddress -ne '127.0.0.1' -and $_.LocalAddress -ne '::1' -and
+    $_.RemoteAddress -ne '127.0.0.1' -and $_.RemoteAddress -ne '::1'
+  } |
+  Select-Object -First 50 |
+  ForEach-Object {
+    $local = if ($_.LocalAddress -match ':') { "[{0}]:{1}" -f $_.LocalAddress, $_.LocalPort } else { "{0}:{1}" -f $_.LocalAddress, $_.LocalPort }
+    $remote = if ($_.RemoteAddress -match ':') { "[{0}]:{1}" -f $_.RemoteAddress, $_.RemotePort } else { "{0}:{1}" -f $_.RemoteAddress, $_.RemotePort }
+    [pscustomobject]@{ Protocol='tcp'; Local=$local; Remote=$remote; State='ESTABLISHED' }
+  } | ConvertTo-Json -Compress
+`
+	rows := psJSONArray(script)
+	out := make([]RecentConnection, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, RecentConnection{
+			Protocol: str(r["Protocol"]),
+			Local:    str(r["Local"]),
+			Remote:   str(r["Remote"]),
+			State:    str(r["State"]),
+		})
+	}
+	return out
+}
+
 func healthFacts() Health {
 	mem := psJSON(`Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory,TotalVisibleMemorySize | ConvertTo-Json -Compress`)
 	disk := psJSON(`Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" | Select-Object Size,FreeSpace | ConvertTo-Json -Compress`)
