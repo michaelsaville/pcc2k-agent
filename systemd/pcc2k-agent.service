@@ -1,0 +1,33 @@
+[Unit]
+Description=PCC2K-Agent — outbound RMM agent
+Documentation=https://github.com/michaelsaville/pcc2k-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/pcc2k-agent.env
+ExecStart=/usr/local/bin/pcc2k-agent --gateway ${PCC2K_GATEWAY_URL} --insecure
+Restart=on-failure
+RestartSec=5s
+
+# Phase 1 dev: run as nobody (read-only inventory). Phase 2 (scripts.*)
+# will require root + dropping caps per-command.
+User=nobody
+Group=nogroup
+
+# Hardening — fine for read-only inventory collection. Tighten further
+# when agent gains script-execute capability.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

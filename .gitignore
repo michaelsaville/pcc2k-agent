@@ -2,3 +2,4 @@ pcc2k-agent
 pcc2k-agent.exe
 *.test
 *.out
+systemd/pcc2k-agent.env
