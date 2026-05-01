@@ -3,3 +3,5 @@ pcc2k-agent.exe
 *.test
 *.out
 systemd/pcc2k-agent.env
+.wix-tools/
+*.msi

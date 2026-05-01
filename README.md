@@ -82,7 +82,34 @@ entries).
   --insecure
 ```
 
-**Windows — install as a service (recommended for soak testing):**
+**Windows — MSI installer (preferred for fleet deploy):**
+
+Each release ships a `pcc2k-agent-X.Y.Z.msi`. Per-machine install,
+needs admin elevation. The MSI:
+
+- Drops `pcc2k-agent.exe` into `C:\Program Files\PCC2K\`
+- Adds the install dir to system PATH
+- Adds a Start menu shortcut that opens an admin PowerShell scoped
+  to the install dir
+
+It does NOT register the SCM service automatically — the token is
+tenant-specific and shouldn't land in the MSI install log. After
+install, open the Start menu shortcut (or any elevated PowerShell)
+and run `pcc2k-agent.exe install ...` to register the service with
+your token.
+
+```powershell
+# Silent install (PowerShell as admin)
+msiexec /i pcc2k-agent-0.3.0.0.msi /qn /l*v install.log
+
+# Then register the service
+pcc2k-agent.exe install --gateway "ws://gateway-host:3012/agent/v1" `
+  --token "<token>" --agent-id "<id>" --client "Test Tenant" `
+  --hostname "$env:COMPUTERNAME" --role workstation --insecure
+pcc2k-agent.exe start
+```
+
+**Windows — install as a service from the bare exe (no MSI):**
 
 ```powershell
 # Run from an elevated PowerShell. Token + non-secret config are stored

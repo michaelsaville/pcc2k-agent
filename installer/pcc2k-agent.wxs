@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX 3 source for the PCC2K-Agent MSI. Built via wixl (msitools)
+  in a Docker container — see scripts/build-msi.sh. wixl supports a
+  pragmatic subset of WiX 3 syntax, which is plenty for an installer
+  that just drops one exe into Program Files, updates PATH, and adds
+  a Start Menu shortcut.
+
+  What this MSI does:
+    * Installs pcc2k-agent.exe to %ProgramFiles%\PCC2K\
+    * Adds install dir to system PATH
+    * Adds a Start menu shortcut that opens admin PowerShell scoped to
+      the install dir
+    * Hand-off post-install: user runs `pcc2k-agent.exe install ...`
+      from elevated PowerShell to register the SCM service with their
+      tenant token
+
+  What this MSI does NOT do:
+    * Register the service automatically (token would leak to MSI log)
+    * Run pcc2k-agent.exe uninstall on MSI uninstall — wixl's custom-
+      action support is limited; users should run the uninstall
+      subcommand themselves if they want to remove the SCM service
+      before MSI removal. (As-is the service stays registered after
+      MSI uninstall and points at a missing exe — easy to clean up
+      with `sc delete pcc2k-agent`.)
+    * Sign anything. Authenticode signing is a separate post-build step.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product
+      Id="*"
+      Name="PCC2K Agent"
+      Manufacturer="PCC2K"
+      Version="$(var.Version)"
+      UpgradeCode="811694fe-aa19-43bf-8486-fa8dfaabc444"
+      Language="1033">
+
+    <Package
+        InstallerVersion="500"
+        Compressed="yes"
+        InstallScope="perMachine"
+        Description="PCC2K Agent — outbound RMM agent (Phase 1 preview)"
+        Manufacturer="PCC2K" />
+
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of PCC2K Agent is already installed." />
+
+    <Media Id="1" Cabinet="agent.cab" EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="PCC2K">
+          <Component
+              Id="MainExe"
+              Guid="88b0b16d-ed76-4189-9add-c960a07b5e36"
+              Win64="yes">
+            <File
+                Id="AgentExe"
+                Source="pcc2k-agent.exe"
+                KeyPath="yes" />
+            <!-- App Paths registration so `pcc2k-agent.exe` can be
+                 invoked without specifying the install dir from any
+                 elevated shell launched after install. Cheaper than a
+                 PATH update and wixl-supported. -->
+            <RegistryValue
+                Root="HKLM"
+                Key="Software\Microsoft\Windows\CurrentVersion\App Paths\pcc2k-agent.exe"
+                Type="string"
+                Value="[INSTALLFOLDER]pcc2k-agent.exe" />
+            <RegistryValue
+                Root="HKLM"
+                Key="Software\Microsoft\Windows\CurrentVersion\App Paths\pcc2k-agent.exe"
+                Name="Path"
+                Type="string"
+                Value="[INSTALLFOLDER]" />
+          </Component>
+        </Directory>
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="PCC2K">
+          <Component
+              Id="StartMenuShortcuts"
+              Guid="8de9853a-ae05-49fa-85f6-facc3201b8c2">
+            <Shortcut
+                Id="AdminPSShortcut"
+                Name="PCC2K Agent (Admin Shell)"
+                Description="Open an elevated PowerShell scoped to the agent install dir"
+                Target="[%SystemRoot%]\System32\WindowsPowerShell\v1.0\powershell.exe"
+                Arguments="-NoExit -Command &quot;cd '[INSTALLFOLDER]'; Write-Host 'Run: .\pcc2k-agent.exe install --gateway ws://gateway.pcc2k.com:3012/agent/v1 --token TOKEN --agent-id ID --insecure'&quot;"
+                WorkingDirectory="INSTALLFOLDER" />
+            <RemoveFolder Id="RemoveProgramMenuFolder" On="uninstall" />
+            <RegistryValue
+                Root="HKCU"
+                Key="Software\PCC2K\Agent"
+                Name="StartMenu"
+                Type="integer"
+                Value="1"
+                KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="Main" Title="PCC2K Agent" Level="1">
+      <ComponentRef Id="MainExe" />
+      <ComponentRef Id="StartMenuShortcuts" />
+    </Feature>
+  </Product>
+</Wix>
