@@ -24,7 +24,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -32,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -162,11 +162,16 @@ type agentConfig struct {
 }
 
 type session struct {
-	cfg        agentConfig
-	conn       *websocket.Conn
-	proofKey   []byte
-	sessionKey []byte
+	cfg          agentConfig
+	conn         *websocket.Conn
+	proofKey     []byte
+	sessionKey   []byte
 	heartbeatSec int
+
+	// Bidirectional I/O state — see session_io.go.
+	writeMu          sync.Mutex
+	pendingMu        sync.Mutex
+	pendingResponses map[string]chan *inboundFrame
 }
 
 func runOnce(cfg agentConfig) error {
@@ -175,6 +180,7 @@ func runOnce(cfg agentConfig) error {
 		return err
 	}
 	defer s.conn.Close()
+	s.startIO()
 	if _, err := s.sendInventoryReport(); err != nil {
 		return fmt.Errorf("inventory.report: %w", err)
 	}
@@ -188,6 +194,11 @@ func runSession(cfg agentConfig) error {
 		return err
 	}
 	defer s.conn.Close()
+
+	// Spin up the reader goroutine. From here on out we never call
+	// conn.ReadJSON directly — the reader demuxes everything and feeds
+	// either a pending-response channel or an inbound dispatcher.
+	readerDone := s.startIO()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -214,6 +225,9 @@ func runSession(cfg agentConfig) error {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-readerDone:
+			// Reader exited — connection is dead. Trigger reconnect.
+			return fmt.Errorf("reader exited")
 		case <-heartbeatTicker.C:
 			if _, err := s.sendHeartbeat(); err != nil {
 				return fmt.Errorf("heartbeat: %w", err)
@@ -373,64 +387,23 @@ func (s *session) sendHeartbeat() (string, error) {
 	return s.sendAuthed("agent.heartbeat", params)
 }
 
+// sendAuthed wraps session.request for the existing inventory/heartbeat
+// callers. Returns the deviceId string from result.deviceId for backwards
+// compatibility with sendInventoryReport's prior contract.
 func (s *session) sendAuthed(method string, params interface{}) (string, error) {
-	id := fmt.Sprintf("go-%d", time.Now().UnixNano())
-	ts := time.Now().UTC().Format(time.RFC3339Nano)
-	nonceBytes := make([]byte, 16)
-	if _, err := rand.Read(nonceBytes); err != nil {
-		return "", err
-	}
-	nonce := hex.EncodeToString(nonceBytes)
-
-	// canonicalBytes wants the JSON representation of params, not the
-	// Go struct. Round-trip through json.Marshal/Unmarshal so we get
-	// the same shape the gateway sees on the wire.
-	rawParams, err := json.Marshal(params)
+	resp, err := s.request(method, params)
 	if err != nil {
 		return "", err
 	}
-	var generic interface{}
-	if err := json.Unmarshal(rawParams, &generic); err != nil {
-		return "", err
+	if resp.Result == nil {
+		return "", nil
 	}
-	cb, err := canonicalBytes(method, id, ts, nonce, generic)
-	if err != nil {
-		return "", err
+	var result map[string]interface{}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return "", nil
 	}
-	mac := hmac.New(sha256.New, s.sessionKey)
-	mac.Write(cb)
-	macB64 := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	frame := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"method":  method,
-		"params":  generic,
-		"auth": map[string]interface{}{
-			"ts":    ts,
-			"nonce": nonce,
-			"mac":   macB64,
-		},
-	}
-	if err := s.conn.WriteJSON(frame); err != nil {
-		return "", fmt.Errorf("write %s: %w", method, err)
-	}
-
-	if err := s.conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
-		return "", err
-	}
-	defer s.conn.SetReadDeadline(time.Time{})
-	var resp map[string]interface{}
-	if err := s.conn.ReadJSON(&resp); err != nil {
-		return "", fmt.Errorf("read %s reply: %w", method, err)
-	}
-	if errObj, ok := resp["error"].(map[string]interface{}); ok {
-		return "", fmt.Errorf("server error: %v", errObj["message"])
-	}
-	if result, ok := resp["result"].(map[string]interface{}); ok {
-		if did, _ := result["deviceId"].(string); did != "" {
-			return did, nil
-		}
+	if did, _ := result["deviceId"].(string); did != "" {
+		return did, nil
 	}
 	return "", nil
 }
