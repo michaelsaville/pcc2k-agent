@@ -89,6 +89,8 @@ func runConsole() {
 		role       = flag.String("role", envDefault("PCC2K_ROLE", "server"), "free-form role tag (workstation/server/laptop/...)")
 		once       = flag.Bool("once", false, "send one inventory.report and exit (smoke test mode)")
 		insecure   = flag.Bool("insecure", false, "allow plain ws:// (dev only — production must use wss://)")
+		fleethubURL = flag.String("fleethub-url", os.Getenv("PCC2K_FLEETHUB_URL"), "FleetHub base URL for posture reporting (empty = skip posture)")
+		fleethubSecret = flag.String("fleethub-agent-secret", os.Getenv("PCC2K_FLEETHUB_AGENT_SECRET"), "Bearer secret for FleetHub posture ingest (empty = skip posture)")
 	)
 	flag.Parse()
 
@@ -114,12 +116,14 @@ func runConsole() {
 	}
 
 	cfg := agentConfig{
-		gatewayURL: *gatewayURL,
-		token:      *token,
-		agentID:    *agentID,
-		clientName: *clientName,
-		hostname:   hn,
-		role:       *role,
+		gatewayURL:     *gatewayURL,
+		token:          *token,
+		agentID:        *agentID,
+		clientName:     *clientName,
+		hostname:       hn,
+		role:           *role,
+		fleethubURL:    *fleethubURL,
+		fleethubSecret: *fleethubSecret,
 	}
 
 	if *once {
@@ -159,6 +163,13 @@ type agentConfig struct {
 	clientName string
 	hostname   string
 	role       string
+	// Phase 8 WS-B step 2 — posture HTTP poster config. Independent
+	// of the WSS gateway; agent calls FleetHub directly with Bearer
+	// auth for backup + AV reporting. Empty values skip posture
+	// silently so the inventory.report loop keeps working when an
+	// operator hasn't enabled posture yet.
+	fleethubURL    string
+	fleethubSecret string
 }
 
 type session struct {
@@ -221,6 +232,18 @@ func runSession(cfg agentConfig) error {
 	inventoryTicker := time.NewTicker(15 * time.Minute)
 	defer inventoryTicker.Stop()
 
+	// Phase 8 WS-B step 2 — posture loop. Same cadence as inventory
+	// (15m). Skipped when --fleethub-url / --fleethub-agent-secret
+	// aren't set so the WSS-only deployment keeps working unchanged.
+	posture := newPostureClient(cfg.fleethubURL, cfg.fleethubSecret)
+	postureTicker := time.NewTicker(15 * time.Minute)
+	defer postureTicker.Stop()
+	if posture.ready() {
+		// Send one immediately on session start so the operator sees
+		// a fresh row in /devices/[id] without waiting 15m.
+		go reportPosture(ctx, posture, cfg)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -236,7 +259,38 @@ func runSession(cfg agentConfig) error {
 			if _, err := s.sendInventoryReport(); err != nil {
 				return fmt.Errorf("periodic inventory: %w", err)
 			}
+		case <-postureTicker.C:
+			if posture.ready() {
+				go reportPosture(ctx, posture, cfg)
+			}
 		}
+	}
+}
+
+// reportPosture runs the per-OS detectors + posts to FleetHub.
+// Runs in a goroutine because some detectors shell out and we don't
+// want to block the heartbeat loop. Errors are logged, not returned —
+// posture is best-effort.
+func reportPosture(ctx context.Context, p *postureClient, cfg agentConfig) {
+	postureCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	bk := detectBackup()
+	bk.ClientName = cfg.clientName
+	bk.Hostname = cfg.hostname
+	if err := p.sendBackup(postureCtx, bk); err != nil {
+		log.Printf("posture.backup: %v", err)
+	} else {
+		log.Printf("posture.backup OK (product=%s)", bk.Product)
+	}
+
+	av := detectAv()
+	av.ClientName = cfg.clientName
+	av.Hostname = cfg.hostname
+	if err := p.sendAv(postureCtx, av); err != nil {
+		log.Printf("posture.av: %v", err)
+	} else {
+		log.Printf("posture.av OK (engine=%s)", av.Engine)
 	}
 }
 
