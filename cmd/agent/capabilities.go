@@ -38,7 +38,42 @@ func detectCapabilities() []string {
 	if backupVerbAvailable() {
 		caps = append(caps, "fleet.backup")
 	}
+	// v1.0.2 — fleet.processes always (every platform can list);
+	// fleet.services only when control verbs work (linux + windows;
+	// macOS list-only is exposed via fleet.processes).
+	caps = append(caps, "fleet.processes")
+	if servicesControlAvailable() {
+		caps = append(caps, "fleet.services")
+	}
+	if avVerbAvailable() {
+		caps = append(caps, "fleet.av")
+	}
 	return caps
+}
+
+// servicesControlAvailable returns true on linux + windows. macOS's
+// services_darwin.go controlService() returns an error — don't
+// advertise the capability so FH renders buttons disabled with
+// tooltip rather than 502 on click.
+func servicesControlAvailable() bool {
+	switch runtime.GOOS {
+	case "linux", "windows":
+		return true
+	default:
+		return false
+	}
+}
+
+// avVerbAvailable returns true when this host has a supported AV
+// product the agent can drive. v1.0.2 supports Defender only on
+// Windows (see av.go). Linux + Darwin always return false; CrowdStrike
+// support is v1.1+ territory.
+//
+// The actual product probe lives in av_defender_windows.go behind
+// a build tag; this thin helper just routes by OS and lets the
+// platform decide.
+func avVerbAvailable() bool {
+	return defenderPresent()
 }
 
 // shellAvailable probes for a usable shell on this host. Windows:
