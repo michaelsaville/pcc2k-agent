@@ -284,6 +284,10 @@ func runSession(cfg agentConfig) error {
 			if posture.ready() {
 				go reportPosture(ctx, posture, cfg)
 			}
+			// Phase v1.0.2 WS-0b / WS-C — also re-check capabilities on
+			// the posture cadence + fire capabilities.update notify on
+			// delta. Runs against the live WSS session.
+			go fireCapabilitiesUpdateIfChanged(s)
 		}
 	}
 }
@@ -313,6 +317,22 @@ func reportPosture(ctx context.Context, p *postureClient, cfg agentConfig) {
 	} else {
 		log.Printf("posture.av OK (engine=%s)", av.Engine)
 	}
+
+	// Phase v1.0.2 WS-C — RustDesk peer-id self-report. Graceful
+	// fallback to nil when read fails (non-default install path).
+	rd := detectRustdesk()
+	remote := RemoteReport{
+		ClientName: cfg.clientName,
+		Hostname:   cfg.hostname,
+	}
+	if rd != "" {
+		remote.RustdeskID = &rd
+	}
+	if err := p.sendRemote(postureCtx, remote); err != nil {
+		log.Printf("posture.remote: %v", err)
+	} else {
+		log.Printf("posture.remote OK (rustdeskId=%q)", rd)
+	}
 }
 
 func dialAndHandshake(cfg agentConfig) (*session, error) {
@@ -325,6 +345,7 @@ func dialAndHandshake(cfg agentConfig) (*session, error) {
 
 	proofKey := hmacSha256([]byte(cfg.token), []byte("pcc2k.proof.v1"))
 
+	initialCaps := detectCapabilities()
 	hello := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      "h-1",
@@ -336,7 +357,7 @@ func dialAndHandshake(cfg agentConfig) (*session, error) {
 			"osVersion":   runtimeOSVersion(),
 			"hostname":    cfg.hostname,
 			"clientName":  cfg.clientName,
-			"capabilities": detectCapabilities(),
+			"capabilities": initialCaps,
 			"protocolMin": protocolVersion,
 			"protocolMax": protocolVersion,
 		},
@@ -345,6 +366,9 @@ func dialAndHandshake(cfg agentConfig) (*session, error) {
 		conn.Close()
 		return nil, fmt.Errorf("write hello: %w", err)
 	}
+	// Phase v1.0.2 WS-0b — cache what we just advertised so the first
+	// cadence-driven re-detect doesn't fire a spurious update.
+	recordInitialCapabilities(initialCaps)
 
 	var challenge struct {
 		Method string `json:"method"`

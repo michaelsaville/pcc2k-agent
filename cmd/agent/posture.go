@@ -84,6 +84,21 @@ func (p *postureClient) sendAv(ctx context.Context, r AvReport) error {
 	return p.post(ctx, "/api/agent/posture/av", r)
 }
 
+// Phase v1.0.2 WS-C — remote-access posture (RustDesk peer-id).
+// Posted every posture cycle so Fl_Device.rustdeskId stays current
+// without operator hand-entry.
+func (p *postureClient) sendRemote(ctx context.Context, r RemoteReport) error {
+	return p.post(ctx, "/api/agent/posture/remote", r)
+}
+
+// RemoteReport is the body for POST /api/agent/posture/remote.
+// FleetHub stores rustdeskId on Fl_Device for the Phase 7 Remote tab.
+type RemoteReport struct {
+	ClientName string  `json:"clientName"`
+	Hostname   string  `json:"hostname"`
+	RustdeskID *string `json:"rustdeskId,omitempty"` // null = no RustDesk installed / could not read
+}
+
 func (p *postureClient) post(ctx context.Context, path string, body interface{}) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
