@@ -315,7 +315,7 @@ func dialAndHandshake(cfg agentConfig) (*session, error) {
 			"osVersion":   runtimeOSVersion(),
 			"hostname":    cfg.hostname,
 			"clientName":  cfg.clientName,
-			"capabilities": []string{"agent", "inventory", "alerts"},
+			"capabilities": detectCapabilities(),
 			"protocolMin": protocolVersion,
 			"protocolMax": protocolVersion,
 		},
