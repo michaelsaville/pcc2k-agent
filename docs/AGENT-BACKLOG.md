@@ -1,10 +1,48 @@
 # pcc2k-agent Backlog — v1.0.1 + v1.0.2 (2-Phase Final Plan)
 
-**Status:** Draft, 2026-05-18. FleetHub server-side capped at Phase
-13 per `~/fleethub/docs/ROADMAP.md`. The agent has its own backlog
-spread across multiple FleetHub phases — this doc consolidates that
-into **two agent phases** that take the agent from current shipped
-state to **v1.0.0 release-tagged + deploy-from-panel functional**.
+**Status:** v1.0.1 **LIVE** 2026-05-18 — see "v1.0.1 SHIPPED" section
+below. v1.0.2 design remains as drafted. FleetHub server-side capped
+at Phase 13 per `~/fleethub/docs/ROADMAP.md`. The agent has its own
+backlog spread across multiple FleetHub phases — this doc consolidates
+that into **two agent phases** that take the agent from current
+shipped state to **v1.0.0 release-tagged + deploy-from-panel
+functional**.
+
+## v1.0.1 SHIPPED (2026-05-18)
+
+5 workstreams / 6 agent commits + 1 FleetHub cross-repo commit:
+
+| WS | Commit | What |
+|---|---|---|
+| A | `145951f` | capabilities.go — feature-detect at startup. Hello payload sends `["agent", "inventory", "alerts", "fleet.shell"?, "fleet.file", "fleet.backup"?]` based on real host probes. |
+| B | `eed6041` | shell.go + shell_unix.go + shell_windows.go. shell.open/input/close verbs; shell.exited callback. Plain stdio pipes (not PTY); PTY is v1.0.2 polish. |
+| C | `d51a99f` | file_transfer.go. file.push/pull verbs + file.transfer.complete callback. SHA-256 verify, atomic tmp→rename, 5GB hard cap. No new deps (stdlib only). |
+| D | `f01babd` | backup.go + backup_unix.go + backup_windows.go. backup.trigger/cancel verbs + backup.complete callback. Per-product invocation matrix: wbadmin/veeam/macrium (Win), restic/borg/duplicati/macos-tm (Unix). |
+| E.FH | FH `1983548` | Fl_EnrollToken + Fl_AgentRegistration schema. /api/admin/enroll-tokens (ADMIN-only, withAudit redactKeys:["token"]). /api/agent-ingest/enroll (token-authed). /install/bootstrap.sh + /install/bootstrap.ps1 static. /clients/[name]?tab=install page. bcryptjs dep. |
+| E.agent | `4828346` | enroll.go bootstrap consumer. main.go --bootstrap-token + --bootstrap-url flags. Single-shot enrollment that prints env-file format to stdout for the wrapping script to write to systemd EnvironmentFile / Windows service env. |
+
+Build matrix verified: linux/amd64 (5.7MB), windows/amd64 (6.0MB),
+darwin/amd64 (6.0MB). `go vet ./...` clean.
+
+**Operator flow now functional:**
+
+```
+FH /clients/<tenant>?tab=install
+  → click "Generate install command" (24h default TTL)
+  → copy Unix or Windows one-liner
+
+Target host:
+  curl -fsSL https://fleethub.pcc2k.com/install/bootstrap.sh \
+    | PCC2K_BOOTSTRAP_TOKEN=<T> PCC2K_FLEETHUB_URL=<U> sudo bash
+
+Host appears in /devices within seconds of first poll.
+```
+
+Token shown ONCE; 410-Gone on re-use; auto-expires per the
+approval-expiry-sweep cron (Phase 12 WS-C.5 — operator crontab
+already wired).
+
+---
 
 After v1.0.2 ships, the agent matches FleetHub v1.0 surface area;
 further verbs become v1.1 alongside FleetHub.
