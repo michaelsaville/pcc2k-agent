@@ -11,21 +11,21 @@ ExecStart=/usr/local/bin/pcc2k-agent --gateway ${PCC2K_GATEWAY_URL} --insecure
 Restart=on-failure
 RestartSec=5s
 
-# Phase 1 dev: run as nobody (read-only inventory). Phase 2 (scripts.*)
-# will require root + dropping caps per-command.
-User=nobody
-Group=nogroup
+# Phase v1.0.2 — flipped to root. shell.open / file.push / backup.trigger
+# / fleet.services.start/stop/restart all require root to spawn child
+# processes against arbitrary system services. Read-only inventory used
+# to be enough; control verbs are not.
+User=root
+Group=root
 
-# Hardening — fine for read-only inventory collection. Tighten further
-# when agent gains script-execute capability.
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=read-only
+# Hardening reduced to match the wider verb surface. ProtectSystem=
+# strict would block backup.trigger writing log files under
+# /var/lib/pcc2k-agent/backups/; ProtectHome=read-only would block
+# RustDesk peer-id reads from operator home dirs.
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true
 

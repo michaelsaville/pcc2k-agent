@@ -41,7 +41,24 @@ import (
 
 const protocolVersion = "1.0"
 
+// Build-time ldflags. Set via:
+//   go build -ldflags "-X main.version=v1.0.0 -X main.gitSha=$(git rev-parse --short HEAD)"
+// Unset = "dev"/"unknown" — fine for non-release builds.
+var (
+	version = "dev"
+	gitSha  = "unknown"
+)
+
 func main() {
+	// --version short-circuit so operators can verify which build is
+	// installed without parsing logs. Done before the SCM check so the
+	// MSI's post-install "verify" step works on Windows too.
+	for _, a := range os.Args[1:] {
+		if a == "--version" || a == "-version" || a == "version" {
+			fmt.Printf("pcc2k-agent %s (%s)\n", version, gitSha)
+			return
+		}
+	}
 	// Windows: when SCM started us, hand off to the service handler
 	// before any flag parsing. The flags-pulled-from-config-file path
 	// runs inside runAsService().

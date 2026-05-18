@@ -15,7 +15,12 @@ cd "$(dirname "$0")/.."
 
 target="${1:-both}"
 image="golang:1.22-alpine"
-ldflags="-s -w"
+# Phase v1.0.2 WS-D — build-time version stamping. If VERSION/GIT_SHA
+# env vars are set the binary's --version reflects them; otherwise
+# defaults to "dev"/"unknown" (set in main.go).
+version="${VERSION:-dev}"
+git_sha="${GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+ldflags="-s -w -X main.version=${version} -X main.gitSha=${git_sha}"
 flags="-trimpath -buildvcs=false"
 
 build_linux() {

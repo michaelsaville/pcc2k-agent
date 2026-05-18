@@ -6,3 +6,4 @@ systemd/pcc2k-agent.env
 .wix-tools/
 *.msi
 pcc2k-agent-darwin-*
+pcc2k-agent-darwin
