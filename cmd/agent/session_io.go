@@ -44,6 +44,18 @@ const (
 	// than this, the reader blocks — which is fine; the gateway will
 	// backpressure the server.
 	inboundBufferSize = 64
+
+	// Phase v1.0.2 WS-0b — outbound frame size cap. Below all known
+	// WSS intermediary defaults (CloudFront, nginx, Cloudflare). See
+	// fleethub/docs/AGENT-PROTOCOL.md §22. Methods that may produce
+	// large responses (fleet.processes.list, fleet.services.list) use
+	// cursor pagination from §21; streaming notifications
+	// (shell.output etc.) bound chunks at the producer separately.
+	maxOutboundFrameBytes = 256 * 1024
+
+	// JSON-RPC 2.0 error codes for v1.0.2 frame-cap signaling.
+	errCodeResponseTooLarge = -32070
+	errCodeCursorExpired    = -32071
 )
 
 // inboundFrame is a parsed JSON-RPC frame from the server. We keep
@@ -173,7 +185,34 @@ func (s *session) writeFrame(frame map[string]interface{}) error {
 		return err
 	}
 	defer s.conn.SetWriteDeadline(time.Time{})
-	return s.conn.WriteJSON(frame)
+	// Phase v1.0.2 WS-0b — outbound frame size cap. Marshal first so
+	// we can measure; reject too-large frames before WriteJSON would
+	// silently push them through to a WSS intermediary that may drop
+	// them with no error visible to us.
+	buf, err := json.Marshal(frame)
+	if err != nil {
+		return fmt.Errorf("marshal frame: %w", err)
+	}
+	if len(buf) > maxOutboundFrameBytes {
+		return &frameSizeError{size: len(buf)}
+	}
+	return s.conn.WriteMessage(websocket.TextMessage, buf)
+}
+
+// frameSizeError is the sentinel returned by writeFrame when a
+// marshalled payload exceeds maxOutboundFrameBytes. Callers should
+// either paginate (per AGENT-PROTOCOL §21) or surface as
+// errCodeResponseTooLarge (-32070) to the requester.
+type frameSizeError struct{ size int }
+
+func (e *frameSizeError) Error() string {
+	return fmt.Sprintf("frame size %d > cap %d (use cursor pagination)", e.size, maxOutboundFrameBytes)
+}
+
+// IsFrameTooLarge returns true if err is a frame-size cap rejection.
+func IsFrameTooLarge(err error) bool {
+	_, ok := err.(*frameSizeError)
+	return ok
 }
 
 // authedFrame builds an HMAC-signed envelope for `method` with `params`,
