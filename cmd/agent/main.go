@@ -91,8 +91,29 @@ func runConsole() {
 		insecure   = flag.Bool("insecure", false, "allow plain ws:// (dev only — production must use wss://)")
 		fleethubURL = flag.String("fleethub-url", os.Getenv("PCC2K_FLEETHUB_URL"), "FleetHub base URL for posture reporting (empty = skip posture)")
 		fleethubSecret = flag.String("fleethub-agent-secret", os.Getenv("PCC2K_FLEETHUB_AGENT_SECRET"), "Bearer secret for FleetHub posture ingest (empty = skip posture)")
+		// Phase 1 / v1.0.1 WS-E — deploy-from-panel bootstrap mode.
+		bootstrapToken = flag.String("bootstrap-token", os.Getenv("PCC2K_BOOTSTRAP_TOKEN"), "one-time enrollment token (consumes via FH /api/agent-ingest/enroll then exits)")
+		bootstrapURL   = flag.String("bootstrap-url", os.Getenv("PCC2K_BOOTSTRAP_URL"), "FleetHub base URL for bootstrap enrollment (default = same as --fleethub-url)")
 	)
 	flag.Parse()
+
+	// Bootstrap path: agent has a one-time token from /clients/[name]?tab=
+	// install. POST to FH, get per-agent secret, persist, exit. Operator's
+	// next invocation (e.g. via systemd unit using EnvironmentFile written
+	// by scripts/bootstrap.sh) uses the stored secret normally.
+	if *bootstrapToken != "" {
+		burl := *bootstrapURL
+		if burl == "" {
+			burl = *fleethubURL
+		}
+		if burl == "" {
+			fatal("--bootstrap-token requires --bootstrap-url or --fleethub-url")
+		}
+		if err := bootstrapEnroll(burl, *bootstrapToken); err != nil {
+			fatal("bootstrap: %v", err)
+		}
+		return
+	}
 
 	if *token == "" {
 		fatal("missing --token (or PCC2K_AGENT_TOKEN)")
