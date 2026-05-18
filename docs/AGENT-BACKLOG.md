@@ -1,12 +1,36 @@
 # pcc2k-agent Backlog — v1.0.1 + v1.0.2 (2-Phase Final Plan)
 
-**Status:** v1.0.1 **LIVE** 2026-05-18 — see "v1.0.1 SHIPPED" section
-below. v1.0.2 design remains as drafted. FleetHub server-side capped
-at Phase 13 per `~/fleethub/docs/ROADMAP.md`. The agent has its own
-backlog spread across multiple FleetHub phases — this doc consolidates
-that into **two agent phases** that take the agent from current
-shipped state to **v1.0.0 release-tagged + deploy-from-panel
-functional**.
+**Status:** v1.0.1 **LIVE** 2026-05-18. v1.0.2 **LIVE** 2026-05-18 —
+v1.0.0 tag now annotated locally (push pending operator approval).
+FleetHub server-side capped at Phase 13 per
+`~/fleethub/docs/ROADMAP.md`. **Agent stack is now at GA — backlog
+below preserved as the historical contract that drove the v1.0
+release.**
+
+## v1.0.2 SHIPPED (2026-05-18)
+
+Seven commits (`f1bb339` → `544a089` agent + `3fe9158` FH):
+
+| WS | Commit | What |
+|----|--------|------|
+| 0a | `f1bb339` (FH) | AGENT-PROTOCOL §8 namespace ownership + §21-25 (cursor pagination, 256KB frame cap, capabilities.update, av.cancel, backward-compat policy). |
+| 0b | `8d96880` (agent) | session_io frame cap + detect_cache 60s TTL + capabilities_update canonicalizer with sort+dedupe (preempts architect §10 hello-loop hotfix). 4 tests. |
+| 0c | `d4bc640` (FH) | `app/lib/agent-capabilities.ts` shared capability constants + `agentSupports(deviceId, cap)` cross-schema $queryRaw helper. |
+| A | `681a13d` (agent) | `fleet.processes.list` (all 3 platforms, cursor pagination, 5min snapshot TTL) + `fleet.services.list/start/stop/restart` (Linux+Windows; macOS list-only). |
+| B | `6383987` (agent) | `fleet.av.scan/update-defs/quarantine/release/cancel` Defender via PowerShell. `Stop-MpScan` for cancel per §24. CrowdStrike dropped (architect §5 option a). |
+| C | `0efba3e` (FH) + `8c69e3b` (agent) | `/api/agent/posture/remote` route + agent-side RustDesk peer-id reader (TOML scan, no deps) + posture loop wiring + bootstrap fallback. |
+| D | `3fe9158` (FH) + `544a089` (agent) | `--version` flag (ldflags-stamped) + AGENT-RUNBOOK + AGENT-CHANGELOG + LICENSE (MIT) + `/install/latest-version` + `/install/agent-manifest.json` + `/install/[binary]` allow-listed download. systemd unit unhardened to root for control verbs. |
+
+v1.0.0 tag annotated locally at agent repo HEAD. Operator-side
+follow-ups:
+- `git push origin v1.0.0` on the agent repo.
+- Stage built binaries into `/var/lib/fleethub/agent-releases/v1.0.0/`
+  (pcc2k-agent / pcc2k-agent.exe / pcc2k-agent-darwin) + write
+  `CURRENT` containing `v1.0.0\n` so `/install/*` routes start
+  serving.
+- GitHub release with the three platform binaries.
+
+---
 
 ## v1.0.1 SHIPPED (2026-05-18)
 
