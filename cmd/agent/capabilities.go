@@ -48,6 +48,9 @@ func detectCapabilities() []string {
 	if avVerbAvailable() {
 		caps = append(caps, "fleet.av")
 	}
+	// WS-C — power control (reboot/shutdown/logoff). Every platform can
+	// reboot/shutdown; logoff is Windows-only and gated in the handler.
+	caps = append(caps, "fleet.power")
 	return caps
 }
 
