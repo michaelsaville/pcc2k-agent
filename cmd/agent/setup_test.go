@@ -33,3 +33,14 @@ func TestParseSetupArgs(t *testing.T) {
 		t.Error("expected error when no key and plain filename")
 	}
 }
+
+func TestCanonicalJSONMatchesJSForHTMLChars(t *testing.T) {
+	got, err := canonicalJSON(map[string]interface{}{"clientName": "Andersons Heating & Cooling", "note": "<b>&</b>"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"clientName":"Andersons Heating & Cooling","note":"<b>&</b>"}`
+	if got != want {
+		t.Errorf("canonicalJSON = %s, want %s", got, want)
+	}
+}

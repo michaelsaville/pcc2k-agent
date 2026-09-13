@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -30,11 +31,7 @@ func canonicalJSON(v interface{}) (string, error) {
 		}
 		return "false", nil
 	case string:
-		b, err := json.Marshal(t)
-		if err != nil {
-			return "", err
-		}
-		return string(b), nil
+		return jsonString(t)
 	case float64:
 		return formatNumber(t), nil
 	case int:
@@ -59,7 +56,7 @@ func canonicalJSON(v interface{}) (string, error) {
 		sort.Strings(keys)
 		parts := make([]string, 0, len(keys))
 		for _, k := range keys {
-			kb, err := json.Marshal(k)
+			kb, err := jsonString(k)
 			if err != nil {
 				return "", err
 			}
@@ -67,7 +64,7 @@ func canonicalJSON(v interface{}) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			parts = append(parts, string(kb)+":"+vb)
+			parts = append(parts, kb+":"+vb)
 		}
 		return "{" + strings.Join(parts, ",") + "}", nil
 	}
@@ -84,6 +81,22 @@ func canonicalJSON(v interface{}) (string, error) {
 	return canonicalJSON(generic)
 }
 
+// jsonString encodes a string the way JS JSON.stringify does. Go's
+// json.Marshal escapes '&', '<' and '>' as \u0026 etc. (HTML safety) —
+// the gateway hashes the JS form, so a payload containing any of those
+// characters MAC-mismatched and the session was closed with 4001. Found
+// 2026-09-13 when the first client with an '&' in its name ("Andersons
+// Heating & Cooling") enrolled. SetEscapeHTML(false) matches JS.
+func jsonString(s string) (string, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(buf.String(), "\n"), nil
+}
+
 // formatNumber mirrors ECMAScript ToString(Number) for the value
 // ranges we ship today (percentages, GB counts, integer counters).
 // strconv.FormatFloat(f, 'g', -1, 64) yields the shortest round-trip
@@ -96,8 +109,9 @@ func formatNumber(f float64) string {
 }
 
 // canonicalBytes mirrors pcc2k-gateway/src/canonical.mjs canonicalBytes.
-//   utf8(method) || 0x00 || utf8(id||"") || 0x00 || utf8(ts) || 0x00 ||
-//   utf8(nonce)  || 0x00 || sha256(canonical_json(payload))
+//
+//	utf8(method) || 0x00 || utf8(id||"") || 0x00 || utf8(ts) || 0x00 ||
+//	utf8(nonce)  || 0x00 || sha256(canonical_json(payload))
 func canonicalBytes(method, id, ts, nonce string, payload interface{}) ([]byte, error) {
 	cj, err := canonicalJSON(payload)
 	if err != nil {
