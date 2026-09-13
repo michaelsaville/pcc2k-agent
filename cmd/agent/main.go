@@ -42,7 +42,9 @@ import (
 const protocolVersion = "1.0"
 
 // Build-time ldflags. Set via:
-//   go build -ldflags "-X main.version=v1.0.0 -X main.gitSha=$(git rev-parse --short HEAD)"
+//
+//	go build -ldflags "-X main.version=v1.0.0 -X main.gitSha=$(git rev-parse --short HEAD)"
+//
 // Unset = "dev"/"unknown" — fine for non-release builds.
 var (
 	version = "dev"
@@ -67,9 +69,19 @@ func main() {
 		return
 	}
 
+	// Double-click path: no args, and our own filename carries a tenant
+	// key (downloaded from FleetHub's Install tab as pcc2k-agent-<key>.exe).
+	if len(os.Args) == 1 {
+		if key := keyFromFilename(os.Args[0]); key != "" {
+			os.Exit(runSetup([]string{"--key", key}))
+		}
+	}
+
 	// Subcommands (Windows-only effects, but the dispatch is shared).
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "setup":
+			os.Exit(runSetup(os.Args[2:]))
 		case "install":
 			if err := installService(os.Args[2:]); err != nil {
 				fatal("install: %v", err)
@@ -98,15 +110,15 @@ func main() {
 
 func runConsole() {
 	var (
-		gatewayURL = flag.String("gateway", envDefault("PCC2K_GATEWAY_URL", "ws://127.0.0.1:3012/agent/v1"), "WSS gateway URL")
-		token      = flag.String("token", os.Getenv("PCC2K_AGENT_TOKEN"), "enrollment token (or PCC2K_AGENT_TOKEN env)")
-		agentID    = flag.String("agent-id", envDefault("PCC2K_AGENT_ID", ""), "Op_Agent.id (must match server-side)")
-		clientName = flag.String("client", envDefault("PCC2K_CLIENT_NAME", "PCC2K (Internal)"), "TH_Client.name")
-		hostname   = flag.String("hostname", envDefault("PCC2K_HOSTNAME", ""), "hostname to report (default = os.Hostname())")
-		role       = flag.String("role", envDefault("PCC2K_ROLE", "server"), "free-form role tag (workstation/server/laptop/...)")
-		once       = flag.Bool("once", false, "send one inventory.report and exit (smoke test mode)")
-		insecure   = flag.Bool("insecure", false, "allow plain ws:// (dev only — production must use wss://)")
-		fleethubURL = flag.String("fleethub-url", os.Getenv("PCC2K_FLEETHUB_URL"), "FleetHub base URL for posture reporting (empty = skip posture)")
+		gatewayURL     = flag.String("gateway", envDefault("PCC2K_GATEWAY_URL", "ws://127.0.0.1:3012/agent/v1"), "WSS gateway URL")
+		token          = flag.String("token", os.Getenv("PCC2K_AGENT_TOKEN"), "enrollment token (or PCC2K_AGENT_TOKEN env)")
+		agentID        = flag.String("agent-id", envDefault("PCC2K_AGENT_ID", ""), "Op_Agent.id (must match server-side)")
+		clientName     = flag.String("client", envDefault("PCC2K_CLIENT_NAME", "PCC2K (Internal)"), "TH_Client.name")
+		hostname       = flag.String("hostname", envDefault("PCC2K_HOSTNAME", ""), "hostname to report (default = os.Hostname())")
+		role           = flag.String("role", envDefault("PCC2K_ROLE", "server"), "free-form role tag (workstation/server/laptop/...)")
+		once           = flag.Bool("once", false, "send one inventory.report and exit (smoke test mode)")
+		insecure       = flag.Bool("insecure", false, "allow plain ws:// (dev only — production must use wss://)")
+		fleethubURL    = flag.String("fleethub-url", os.Getenv("PCC2K_FLEETHUB_URL"), "FleetHub base URL for posture reporting (empty = skip posture)")
 		fleethubSecret = flag.String("fleethub-agent-secret", os.Getenv("PCC2K_FLEETHUB_AGENT_SECRET"), "Bearer secret for FleetHub posture ingest (empty = skip posture)")
 		// Phase 1 / v1.0.1 WS-E — deploy-from-panel bootstrap mode.
 		bootstrapToken = flag.String("bootstrap-token", os.Getenv("PCC2K_BOOTSTRAP_TOKEN"), "one-time enrollment token (consumes via FH /api/agent-ingest/enroll then exits)")
@@ -368,15 +380,15 @@ func dialAndHandshake(cfg agentConfig) (*session, error) {
 		"id":      "h-1",
 		"method":  "agent.hello",
 		"params": map[string]interface{}{
-			"agentId":     cfg.agentID,
-			"version":     "0.1.0-go",
-			"os":          detectFamily(),
-			"osVersion":   runtimeOSVersion(),
-			"hostname":    cfg.hostname,
-			"clientName":  cfg.clientName,
+			"agentId":      cfg.agentID,
+			"version":      "0.1.0-go",
+			"os":           detectFamily(),
+			"osVersion":    runtimeOSVersion(),
+			"hostname":     cfg.hostname,
+			"clientName":   cfg.clientName,
 			"capabilities": initialCaps,
-			"protocolMin": protocolVersion,
-			"protocolMax": protocolVersion,
+			"protocolMin":  protocolVersion,
+			"protocolMax":  protocolVersion,
 		},
 	}
 	if err := conn.WriteJSON(hello); err != nil {

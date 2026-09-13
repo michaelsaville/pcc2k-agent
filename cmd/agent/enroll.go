@@ -40,16 +40,20 @@ type bootstrapResponse struct {
 	AgentID         string `json:"agentId"`
 	AgentSecret     string `json:"agentSecret"`
 	FleetHubBaseURL string `json:"fleethubBaseUrl"`
+	GatewayURL      string `json:"gatewayUrl"`
 	TenantName      string `json:"tenantName"`
 	Error           string `json:"error,omitempty"`
 }
 
-func bootstrapEnroll(fleethubURL, token string) error {
+// enrollRequest is the HTTP half of enrollment, shared by the legacy
+// --bootstrap-token path and the 2026-09 `setup` path (per-tenant key).
+// The server accepts either credential on the same endpoint.
+func enrollRequest(fleethubURL, token string) (*bootstrapResponse, error) {
 	if strings.TrimSpace(fleethubURL) == "" {
-		return fmt.Errorf("fleethubURL required")
+		return nil, fmt.Errorf("fleethubURL required")
 	}
 	if strings.TrimSpace(token) == "" {
-		return fmt.Errorf("token required")
+		return nil, fmt.Errorf("token required")
 	}
 
 	hn, _ := os.Hostname()
@@ -61,21 +65,21 @@ func bootstrapEnroll(fleethubURL, token string) error {
 	}
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+		return nil, fmt.Errorf("marshal: %w", err)
 	}
 
 	url := strings.TrimRight(fleethubURL, "/") + "/api/agent-ingest/enroll"
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "pcc2k-agent/v1.0.1-bootstrap")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST %s: %w", url, err)
+		return nil, fmt.Errorf("POST %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	rawBody, _ := io.ReadAll(resp.Body)
@@ -87,19 +91,27 @@ func bootstrapEnroll(fleethubURL, token string) error {
 		}
 		_ = json.Unmarshal(rawBody, &errEnv)
 		if errEnv.Error != "" {
-			return fmt.Errorf("enroll HTTP %d: %s", resp.StatusCode, errEnv.Error)
+			return nil, fmt.Errorf("enroll HTTP %d: %s", resp.StatusCode, errEnv.Error)
 		}
-		return fmt.Errorf("enroll HTTP %d: %s", resp.StatusCode, string(rawBody))
+		return nil, fmt.Errorf("enroll HTTP %d: %s", resp.StatusCode, string(rawBody))
 	}
 
 	var result bootstrapResponse
 	if err := json.Unmarshal(rawBody, &result); err != nil {
-		return fmt.Errorf("parse response: %w (body=%s)", err, string(rawBody))
+		return nil, fmt.Errorf("parse response: %w (body=%s)", err, string(rawBody))
 	}
 	if result.AgentID == "" || result.AgentSecret == "" {
-		return fmt.Errorf("server returned empty agentId or agentSecret")
+		return nil, fmt.Errorf("server returned empty agentId or agentSecret")
 	}
 
+	return &result, nil
+}
+
+func bootstrapEnroll(fleethubURL, token string) error {
+	result, err := enrollRequest(fleethubURL, token)
+	if err != nil {
+		return err
+	}
 	// Print to stdout in env-file format. scripts/bootstrap.sh parses
 	// this via sed; the Windows scripts/bootstrap.ps1 parses JSON
 	// directly from the HTTP call instead and bypasses this format,
